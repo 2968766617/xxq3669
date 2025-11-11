@@ -3,7 +3,7 @@ env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: 'android16'
   KERNEL_VERSION: '6.6'
-  KERNEL_NAME: 'android16-8-g29d86c5fc9dd-abogki428889875-4k'
+  KERNEL_NAME: 'android15-8-g29d86c5fc9dd-abogki428889875-4k'
 on:
   workflow_dispatch:
     inputs:
@@ -79,24 +79,25 @@ jobs:
             sed -i 's/ -dirty//g' "$f"
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
-
       - name: Android16核心适配（无外部依赖）
         run: |
           cd kernel_workspace/common
           # 绕vintf校验
           echo "CONFIG_VINTF_DISABLE_CHECKS=y" >> ./arch/arm64/configs/gki_defconfig
-          # 对齐基带版本
+          # 对齐基带版本（匹配设备M_V3_P10）
           if [ -f ./drivers/misc/mediatek/baseband/baseband.c ]; then
             sed -i 's/MTK_BASEBAND_VERSION=.*/MTK_BASEBAND_VERSION=M_V3_P10/' ./drivers/misc/mediatek/baseband/baseband.c
           fi
-
-      - name: 配置ccache
+      - name: 配置ccache（修复变量生效问题）
         run: |
-          echo "CCACHE_DIR=$HOME/.ccache_6.6.50" >> $GITHUB_ENV
-          echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
+          # 1. 先定义变量并创建目录，确保路径有效
+          CCACHE_DIR="$HOME/.ccache_6.6.50"
           mkdir -p "$CCACHE_DIR"
+          # 2. 写入GITHUB_ENV供后续步骤调用
+          echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
+          # 3. 初始化ccache缓存大小限制
           ccache -M "$CCACHE_MAXSIZE"
-
       - name: 添加KernelSU（SukiSU Ultra）
         if: github.event.inputs.ksu_type == 'sukisu'
         id: ksu_version
@@ -119,7 +120,6 @@ jobs:
           KSU_VERSION=$(expr $(git rev-list --count main) + 37185 2>/dev/null || echo 114514)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
           echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
-
       - name: 应用SukiSU+SUSFS补丁（修复分支错误）
         if: github.event.inputs.ksu_type == 'sukisu'
         run: |
@@ -143,7 +143,6 @@ jobs:
             patch -p1 < scope_min_manual_hooks_v1.6.patch || true
           fi
           patch -p1 < 69_hide_stuff.patch || true
-
       - name: 应用lz4/zstd补丁（可选）
         if: github.event.inputs.lz4_enable == '1'
         run: |
@@ -157,8 +156,7 @@ jobs:
           git apply -p1 < 001-lz4.patch || true
           git apply -p1 < 001-lz4-clearMake.patch || true
           patch -p1 < 002-zstd.patch || true
-
-      - name: 内核配置（核心功能）
+      - name: 内核配置（核心功能，适配天玑9400+）
         run: |
           cd kernel_workspace
           # KSU配置
@@ -178,12 +176,11 @@ jobs:
           # SUSFS配置
           echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          # 编译优化
+          # 编译优化（适配天玑9400+性能）
           echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/gki_defconfig
           sed -i 's/check_defconfig//' ./common/build.config.gki
           echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/gki_defconfig
-
-      - name: 启用基带保护（可选）
+      - name: 启用基带保护（可选，匹配设备基带版本）
         if: github.event.inputs.baseband_guard == 'true'
         run: |
           cd kernel_workspace
@@ -197,8 +194,7 @@ jobs:
           sed -i 's/selinuxfs.o //g' "./selinux/Makefile"
           sed -i 's/hooks.o //g' "./selinux/Makefile"
           cat "./baseband-guard/sepatch.txt" >> "./selinux/Makefile"
-
-      - name: 构建内核
+      - name: 构建内核（适配Android16/ColorOS16）
         run: |
           WORKDIR="$(pwd)"
           export PATH="$WORKDIR/kernel_workspace/clang18/bin:$PATH"
@@ -218,18 +214,16 @@ jobs:
           SO_DIR=$(pwd)
           export PRELOAD_LIBS="$SO_DIR/libfakestat.so $SO_DIR/libfaketimeMT.so"
           
-          # 编译内核
+          # 编译内核（启用ccache加速，适配arm64架构）
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
-
-      - name: 打包AK3刷机包
+      - name: 打包AK3刷机包（适配一加Ace5至尊版）
         run: |
           cd kernel_workspace
           git clone https://github.com/cctv18/AnyKernel3 --depth=1 && rm -rf ./AnyKernel3/.git
           cd AnyKernel3
           cp ../common/out/arch/arm64/boot/Image ./Image
           zip -r ../AnyKernel3_SukiSU_${{ env.KSUVER }}_6.6_A16.zip ./*
-
       - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
