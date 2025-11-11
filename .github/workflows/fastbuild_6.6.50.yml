@@ -1,4 +1,4 @@
-name: (天玑特供)加速版构建 6.6.50 欧加真OKI内核（Android16适配-终极版）
+name: (天玑特供)加速版构建 6.6.50 欧加真OKI内核（Android16适配-终极修复版）
 env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: 'android16'
@@ -88,16 +88,22 @@ jobs:
           if [ -f ./drivers/misc/mediatek/baseband/baseband.c ]; then
             sed -i 's/MTK_BASEBAND_VERSION=.*/MTK_BASEBAND_VERSION=M_V3_P10/' ./drivers/misc/mediatek/baseband/baseband.c
           fi
-      - name: 配置ccache（修复变量生效问题）
+      - name: 配置ccache（终极修复：显式定义所有变量）
         run: |
-          # 1. 先定义变量并创建目录，确保路径有效
+          # 1. 显式定义所有ccache相关变量
           CCACHE_DIR="$HOME/.ccache_6.6.50"
+          CCACHE_MAXSIZE="3G"  # 明确赋值，避免空值
+          # 2. 创建目录
           mkdir -p "$CCACHE_DIR"
-          # 2. 写入GITHUB_ENV供后续步骤调用
+          # 3. 写入GITHUB_ENV供后续步骤调用
           echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
-          echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
-          # 3. 初始化ccache缓存大小限制
+          echo "CCACHE_MAXSIZE=$CCACHE_MAXSIZE" >> $GITHUB_ENV
+          # 4. 初始化ccache缓存大小（此时变量已完全明确）
           ccache -M "$CCACHE_MAXSIZE"
+          # 可选：调试信息输出（确认变量生效）
+          echo "CCACHE配置路径: $CCACHE_DIR"
+          echo "CCACHE缓存上限: $CCACHE_MAXSIZE"
+          ccache -s  # 查看当前ccache状态
       - name: 添加KernelSU（SukiSU Ultra）
         if: github.event.inputs.ksu_type == 'sukisu'
         id: ksu_version
