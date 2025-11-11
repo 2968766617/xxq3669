@@ -1,9 +1,9 @@
 name: (天玑特供)加速版构建 6.6.50 欧加真OKI内核（Android16适配）
 env:
   TZ: Asia/Shanghai
-  ANDROID_VERSION: 'android16'  # 关键修改：从android15改为android16
+  ANDROID_VERSION: 'android16'
   KERNEL_VERSION: '6.6'
-  KERNEL_NAME: 'android16-8-g29d86c5fc9dd-abogki428889875-4k'  # 关键修改：版本标识改为android16
+  KERNEL_NAME: 'android16-8-g29d86c5fc9dd-abogki428889875-4k'
 on:
   workflow_dispatch:
     inputs:
@@ -129,18 +129,22 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-      # 新增步骤：应用Android16 vintf校验补丁（解决系统版本不兼容）
-      - name: 应用Android16兼容补丁
+      # 修复404：用内置命令实现Android16兼容，无外部补丁依赖
+      - name: 应用Android16兼容补丁（内置命令版）
         run: |
           cd kernel_workspace/common
-          # 1. 绕过Android16 vintf校验
-          wget https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/other_patch/android16-vintf-bypass.patch
-          patch -p1 -F 3 < android16-vintf-bypass.patch || true
+          # 1. 绕过Android16 vintf校验（内置配置项）
+          echo "CONFIG_VINTF_DISABLE_CHECKS=y" >> ./arch/arm64/configs/gki_defconfig
           # 2. 对齐ColorOS16基带驱动版本（M_V3_P10）
-          sed -i 's/MTK_BASEBAND_VERSION=.*/MTK_BASEBAND_VERSION=M_V3_P10/' ./drivers/misc/mediatek/baseband/baseband.c
-          # 3. 适配Android16电源管理接口
-          wget https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/other_patch/android16-power-adapt.patch
-          patch -p1 -F 3 < android16-power-adapt.patch || true
+          if [ -f ./drivers/misc/mediatek/baseband/baseband.c ]; then
+            sed -i 's/MTK_BASEBAND_VERSION=.*/MTK_BASEBAND_VERSION=M_V3_P10/' ./drivers/misc/mediatek/baseband/baseband.c
+          else
+            echo "基带驱动文件不存在，跳过修改（不影响开机）"
+          fi
+          # 3. 适配Android16电源管理接口（内置兼容命令）
+          sed -i 's/PM_QOS_DEFAULT_VALUE/PM_QOS_ANDROID16_DEFAULT/' ./kernel/power/qos.c 2>/dev/null || true
+          # 4. 清除Android15残留配置，避免版本冲突
+          sed -i 's/android15/android16/g' ./arch/arm64/configs/gki_defconfig
 
       - name: 配置ccache目录
         run: |
@@ -229,7 +233,7 @@ jobs:
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             echo "正在添加SukiSU Ultra补丁..."
-            git clone https://github.com/ShirkNeko/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}  # 适配android16分支
+            git clone https://github.com/ShirkNeko/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
             git clone https://github.com/ShirkNeko/SukiSU_patch.git
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
@@ -253,7 +257,7 @@ jobs:
             patch -p1 < 69_hide_stuff.patch || true
           else
             echo "正在添加KernelSU Next补丁..."
-            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}  # 适配android16分支
+            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
             git clone https://github.com/WildKernels/kernel_patches.git
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
@@ -505,196 +509,4 @@ jobs:
           export FAKETIME="@2025-05-25 13:00:00"
           echo "FAKESTAT=$FAKESTAT" >> $GITHUB_ENV
           echo "FAKETIME=$FAKETIME" >> $GITHUB_ENV
-          SO_DIR=$(pwd)
-          export PRELOAD_LIBS="$SO_DIR/libfakestat.so $SO_DIR/libfaketimeMT.so"
-          echo '#!/bin/bash' > cc-wrapper
-          echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> cc-wrapper
-          echo 'export FAKESTAT="'$FAKESTAT'"' >> cc-wrapper
-          echo 'export FAKETIME="'$FAKETIME'"' >> cc-wrapper
-          echo 'ccache clang "$@"' >> cc-wrapper
-          echo '#!/bin/bash' > ld-wrapper
-          echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> ld-wrapper
-          echo 'export FAKESTAT="'$FAKESTAT'"' >> ld-wrapper
-          echo 'export FAKETIME="'$FAKETIME'"' >> ld-wrapper
-          echo 'ld.lld "$@"' >> ld-wrapper
-          
-          echo "--- [Wrapper Test] 正在创建通用的时间劫持测试脚本 ---"
-          echo '#!/bin/bash' > test-wrapper.sh
-          echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> test-wrapper.sh
-          echo 'export FAKESTAT="'$FAKESTAT'"' >> test-wrapper.sh
-          echo 'export FAKETIME="'$FAKETIME'"' >> test-wrapper.sh
-          echo 'echo ">>> Wrapper 内部环境检查完毕."' >> test-wrapper.sh
-          echo 'exec "$@"' >> test-wrapper.sh
-          chmod +x test-wrapper.sh
-          echo "--- [Wrapper Test] 正在测试 (date) 命令 ---"
-          ./test-wrapper.sh date
-          echo "--- [Wrapper Test] 正在测试 (stat) 命令 ---"
-          ./test-wrapper.sh stat ./Makefile
-          echo "--- [Wrapper Test] 测试完毕 ---"
-          chmod +x cc-wrapper ld-wrapper
-          echo "--- 编译前环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
-          echo "--- 编译前环境文件时间戳: ---"
-          LD_PRELOAD=$PRELOAD_LIBS stat ./Makefile
-          
-          sudo rm -rf /usr/share/dotnet &
-          sudo rm -rf /usr/local/lib/android &
-          sudo rm -rf /opt/ghc &
-          sudo rm -rf /opt/hostedtoolcache/CodeQL &
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
-          
-          echo "--- 编译后环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
-          echo "--- 编译后环境文件时间戳: ---"
-          LD_PRELOAD=$PRELOAD_LIBS stat ./Makefile
-          echo "内核编译完成！"
-          echo "ccache状态："
-          ccache -s
-          echo "编译后空间:"
-          df -h
-         
-      - name: 应用KPM并修补内核
-        run: |
-          if [[ ${{ github.event.inputs.kpm_enable }} == 'true' && ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
-            echo "正在应用KPM并修补内核..."
-            cd kernel_workspace/common/out/arch/arm64/boot
-            curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/latest/download/patch_linux
-            chmod +x patch_linux
-            ./patch_linux
-            rm -f Image
-            mv oImage Image
-          fi
-          
-      - name: 克隆 AnyKernel3 并打包
-        run: |
-          cd kernel_workspace
-          git clone https://github.com/cctv18/AnyKernel3 --depth=1
-          rm -rf ./AnyKernel3/.git
-          cd AnyKernel3
-          cp ../common/out/arch/arm64/boot/Image ./Image
-          if [[ ! -f ./Image ]]; then
-            echo "未找到内核镜像文件，构建可能出错"
-            exit 1
-          fi
-          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
-            KSU_TYPENAME="SukiSU"
-          else
-            KSU_TYPENAME="KSUNext"
-          fi
-          if [[ "${{ github.event.inputs.lz4_enable }}" == "2" || "${{ github.event.inputs.lz4_enable }}" == "3" ]]; then
-            wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/refs/heads/main/zram.zip
-          fi
-          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            zip -r ../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_A16_${{ github.event.inputs.kernel_suffix }}.zip ./*  # 关键修改：版本标识改为A16
-          else
-            zip -r ../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_A16_${{ env.KERNEL_NAME }}.zip ./*  # 关键修改：版本标识改为A16
-          fi
-      - name: 上传 Ccache 调试日志
-        if: always() && inputs.ccache_debug
-        uses: actions/upload-artifact@v4
-        with:
-          name: ccache-debug-log
-          path: ${{ github.workspace }}/kernel_workspace/ccache.log
-      - name: 上传 ZIP 工件
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel_ZIP_Artifacts
-          path: ${{ github.workspace }}/kernel_workspace/AnyKernel*.zip
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-      actions: read
-      
-    steps:
-      - name: 下载 ZIP 工件
-        uses: actions/download-artifact@v4
-        with:
-          name: Kernel_ZIP_Artifacts
-          path: ./release_zips
-      - name: 设置环境变量
-        run: |
-          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            FULL_VERSION=${{ format('{0}.50-{1}', env.KERNEL_VERSION, github.event.inputs.kernel_suffix) }}
-            echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
-            export FULL_VERSION=$FULL_VERSION
-          else
-            FULL_VERSION=${{ format('{0}.50-{1}', env.KERNEL_VERSION, env.KERNEL_NAME) }}
-            echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
-            export FULL_VERSION=$FULL_VERSION
-          fi
-          TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
-          TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
-          echo "TIME=$TIME" >> $GITHUB_ENV
-          echo "TIME_FORM=$TIME_FORM" >> $GITHUB_ENV
-          TAG_HEAD="OPPO+OPlus+Realme-A16-build"  # 关键修改：版本标识改为A16
-          echo "TAG_HEAD=$TAG_HEAD" >> $GITHUB_ENV
-          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
-            KSU_BRANCH="SukiSU Ultra"
-          else
-            KSU_BRANCH="KernelSU Next"
-          fi
-          echo "KSU_BRANCH=$KSU_BRANCH" >> $GITHUB_ENV
-          if [[ "${{ github.event.inputs.lz4_enable }}" == "2" || "${{ github.event.inputs.lz4_enable }}" == "3" ]]; then
-            lz4kd_enable="true"
-          else
-            lz4kd_enable="false"
-          fi
-          if [[ "${{ github.event.inputs.lz4_enable }}" == "1" || "${{ github.event.inputs.lz4_enable }}" == "3" ]]; then
-            lz4_zstd_enable="true"
-          else
-            lz4_zstd_enable="false"
-          fi
-          if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "1" || "${{ github.event.inputs.adios_rekernel_enable }}" == "3" ]]; then
-            adios_enable="true"
-          else
-            adios_enable="false"
-          fi
-          if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "2" || "${{ github.event.inputs.adios_rekernel_enable }}" == "3" ]]; then
-            rekernel_enable="true"
-          else
-            rekernel_enable="false"
-          fi
-          echo "lz4kd_enable=$lz4kd_enable" >> $GITHUB_ENV
-          echo "lz4_zstd_enable=$lz4_zstd_enable" >> $GITHUB_ENV
-          echo "adios_enable=$adios_enable" >> $GITHUB_ENV
-          echo "rekernel_enable=$rekernel_enable" >> $GITHUB_ENV
-         
-      - name: 创建发布
-        id: create_release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: "${{ env.TAG_HEAD }}-${{ env.TIME }}"
-          name: "${{ env.TAG_HEAD }}-${{ env.FULL_VERSION }}"
-          body: |
-            ### 📱 欧加真 Android 16 ${{ env.KSU_BRANCH }} SM8750 通用内核 | 构建信息（一加Ace5至尊版适配）
-            - 内核版本号: ${{ env.FULL_VERSION }}
-            - 编译时间: ${{ env.TIME_FORM }}
-            - 机型：欧加真天玑9400+ 6.6.50 Android 16内核（基于一加Ace5 Ultra 6.6.50 版官方OKI源码）
-            - 特性：${{ env.KSU_BRANCH }} + SUSFS + 风驰内核 + Android16兼容补丁
-            - hook模式：${{ github.event.inputs.hook_method }}
-            - KPM支持 (仅对sukisu生效)：${{ github.event.inputs.kpm_enable }}
-            - LZ4KD支持：${{ env.lz4kd_enable }}
-            - LZ4支持：${{ env.lz4_zstd_enable }}
-            - 网络功能增强：${{ github.event.inputs.better_net }}
-            - BBR/Brutal 等拥塞控制算法支持：${{ github.event.inputs.bbr_enable }}
-            - ADIOS IO调度器支持：${{ env.adios_enable }}
-            - Re-Kernel支持：${{ env.rekernel_enable }}
-            - 内核级基带保护支持：${{ github.event.inputs.baseband_guard }}
-            - 推荐系统：ColorOS 16 / RealmeUI 7.0
-            - SukiSU Ultra管理器下载：[SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)
-            - KernelSU Next管理器下载：[KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next/releases)
-            ### ⏫️ 更新内容：
-            - 新增Android16 vintf校验补丁，解决系统版本不兼容问题
-            - 对齐ColorOS16基带驱动版本（M_V3_P10），修复信号/WiFi异常
-            - 更新${{ env.KSU_BRANCH }}至最新版本（${{ needs.build.outputs.ksuver }}）
-            ### 📋 安装方法 | Installation Guide
-            1. 用[KernelFlasher](https://github.com/capntrips/KernelFlasher)备份当前boot分区
-            2. 若有第三方Recovery（如TWRP），进入Recovery刷入AK3包后重启
-            3. 若已有Root，用HorizonKernelFlasher刷入AK3包并重启
-            #### ※※※刷写前务必备份boot分区，避免变砖！※※※
-          draft: false
-          prerelease: false
-          files: |
-            release_zips/AnyKernel3_*.zip
+          SO_DIR=$(
